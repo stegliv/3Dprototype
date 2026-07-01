@@ -1,3 +1,5 @@
+// This version is outdated, current version will be uploaded ASAP
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
