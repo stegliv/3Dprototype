@@ -1,19 +1,15 @@
-// This version is outdated, current version will be uploaded ASAP
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <SDL2/SDL.h> // current version, rendering is done in a proper window, rather than a shell using ascii.
 
 /*
  * Structures
  */
 
-char screen[192][192];
+SDL_Window *window = NULL;
+SDL_Renderer *renderer = NULL;
 
-struct projection {
-    float x;
-    float y;
-} typedef projection;
 
 struct vector {
     float x;
@@ -30,8 +26,18 @@ struct triangle {
 struct camera {
     vector pos;
     vector direction;
+
+    vector planxz;
+    vector planyz;
+
     float angle;
     float fov;
+    float true_fov;
+    float inv_tan;
+
+    float cosangle;
+    float sinangle;
+
 } typedef cam;
 
 /*
@@ -103,64 +109,57 @@ vector normalisation(vector u) { // Prend un vecteur, donne le vecteur directeur
     return scale(u, inorm(u));
 }
 
+void setcamangle(cam *camera, float a) {
+    (*camera).angle = a;
+    (*camera).cosangle = cos(a);
+    (*camera).sinangle = sin(a);
+}
+
+void setcamdirection(cam *camera, vector v) {
+    (*camera).direction = v;
+    (*camera).planxz = normalisation(nvec(v.x, 0, v.z));
+    float x = ((*camera).planxz).x;
+    float z = ((*camera).planxz).z;
+    (*camera).planyz = normalisation(nvec( z * (v.x) - x*(v.z), v.y, x * (v.x) + z * (v.z)));
+}
+
+void setcamfov(cam *camera, float a) {
+    (*camera).fov = a;
+    float newfov = ((a/360) * 6.283185)/ 2;
+    (*camera).true_fov = newfov;
+    (*camera).inv_tan = 1/(tan(newfov));
+}
 
 /*
  * Gestion de l'affichage
  */
 
-void n() { // Saut de ligne, évite de retaper printf à chaque fois.
-    printf("\n");
-}
-
-void scr() { // Screen reset : On supprime tout ce qui est contenu dans l'écran. Sert aussi à initialiser l'écran.
-    for (int i = 0; i < 192; i++) {
-        for (int j = 0; j < 192; j++) {
-            screen[j][i] = '_';
-        }
-    }
-}
-
-void scd() { // Screen display : On affiche ce qui est à l'écran
-    for (int i = 1; i < 191; i++) {
-        for (int j = 1; j < 191; j++) {
-            printf("%c ", screen[j][192 - i]);
-        }
-        n();
-    }
-}
-
-void scc() { // Screen clear : On fait plein de sauts de ligne pour préparer le prochain affichage
-    for (int i = 0; i<192; i++) {
-        n();
-    }
-}
 
 vector getcoord(vector a, cam c) {
     vector toshow = a;
     vector direction = c.direction;
-    vector pxz = normalisation(nvec((c.direction).x, 0, (c.direction).z));
+    vector pxz = c.planxz;
+    vector pyz = c.planyz;
 
     if (pxz.x != 0 || pxz.z != 0) {
         toshow = nvec((pxz.z) * (toshow.x) - (pxz.x)*toshow.z, toshow.y, (pxz.x) * (toshow.x) + (pxz.z)*(toshow.z));
-        direction = nvec( (pxz.z) * (direction.x) - (pxz.x)*direction.z, direction.y, (pxz.x) * (direction.x) + (pxz.z) * (direction.z));
-
     }
-    vector pyz = normalisation(direction);
+
     if (pyz.y != 0 || pyz.z != 0) {
         toshow = nvec(toshow.x, pyz.z * toshow.y - pyz.y * toshow.z, (pyz.y) * toshow.y + toshow.z * pyz.z);
     }
     return toshow;
 }
 
-void vd(vector a, vector b, cam c) {
+void vd(vector a, vector b, cam c, SDL_Renderer *d) {
     vector ta = getcoord(sub(a, c.pos), c);
     vector tb = getcoord(sub(b, c.pos), c);
 
-    float angle = c.angle;
-    float fov = ((c.fov/360) * 6.283185)/ 2;
+    float cosinus_angle = c.cosangle;
+    float sinus_angle = c.sinangle;
+    float fov = c.inv_tan;
+
     
-
-
     if (tb.z <= 0 && ta.z > 0) {
         vector stockage = ta;
         ta = tb;
@@ -171,126 +170,89 @@ void vd(vector a, vector b, cam c) {
         vector na = ta;
         vector nb = tb;
 
-        float tan2 = 2 * tan(fov);
-        tan2 = tan2 * tan2;
-        tan2 = 1/tan2;
-        float xa = ta.x;
-        float xa2 = xa*xa;
-        float ya = ta.y;
-        float ya2 = ya*ya;
-        float za = ta.z;
-        float za2 = za*za;
-        float xb = tb.x;
-        float xb2 = xb*xb;
-        float yb = tb.y;
-        float yb2 = yb*yb;
-        float zb = tb.z;
-        float zb2 = zb*zb;
-        float xaxb = xa*xb;
-        float yayb = ya*yb;
-        float zazb = za*zb;
-        float coeffa = za2 - 2*zazb + zb2 - tan2*(xa2 - 2*xaxb + xb2 + ya2 - 2*yayb + yb2);
-        float coeffb = 2*(zazb - zb2 - tan2*(xaxb - xb2 + yayb - yb2));
-        float coeffc = zb2 - tan2*(xb2 + yb2);
+        float az = ta.z;
+        float bz = tb.z;
+        float ax = ta.x;
+        float ay = ta.y;
+        float bx = tb.x;
+        float by = tb.y;
 
-        float delta = 1/(coeffb*coeffb - 4*coeffa*coeffc);
-        float t = Q_rsqrt(delta);
-        float t1 = (-coeffb - t)/(2*coeffa);
+        float mini = fmin(fmin(abs(ax), abs(ay)), fmin(abs(bx), abs(by)));
+        mini = fov * mini;
 
-        ta = add(scale(ta, t1), scale(tb, 1-t1));
-        
-
+        float t = (mini - az) / (bz - az);
+        ta = add(scale(ta, t), scale(tb, 1-t));
     }
+        
+        
 
     if (ta.z > 0 && tb.z > 0) {
         ta = scale(ta, 1/(ta.z));
         tb = scale(tb, 1/(tb.z));
 
+        ta = nvec(ta.x * cosinus_angle - ta.y * sinus_angle, ta.x * sinus_angle + ta.y * cosinus_angle, 0);
+        tb = nvec(tb.x * cosinus_angle - tb.y * sinus_angle, tb.x * sinus_angle + tb.y * cosinus_angle, 0);
 
 
-        ta = nvec(ta.x * cos(angle) - ta.y * sin(angle), ta.x * sin(angle) + ta.y * cos(angle), 0);
-        tb = nvec(tb.x * cos(angle) - tb.y * sin(angle), tb.x * sin(angle) + tb.y * cos(angle), 0);
+
+        float horschampa = 1/(inorm(ta));
+        float horschampb = 1/(inorm(tb));
+        int dontdraw = 1;
+
+        if (horschampa > 1.5 && horschampb > 1.5) {
+            float interpolation = ( -tb.x * (ta.x + tb.x) - tb.y * (ta.y + tb.y) ) / ( (ta.x - tb.x) * (ta.x - tb.x) +  (ta.y - tb.y) * (ta.y - tb.y) );
+            if (interpolation <= 1 && interpolation >= 0) {
+                vector orthogonal = add(scale(ta, interpolation), scale(tb, 1 - interpolation)); // On a une ligne perpendiculaire au segment AB.
+                ta = scale(normalisation(sub(ta, tb)), 1.5);
+                tb = scale(ta, -1);
+                ta = add(ta, orthogonal);
+                tb = add(tb, orthogonal);
+                dontdraw = 0;
+            } 
+        } else if (horschampa > 1.5) {
+            vector amb = sub(ta, tb); // a moins b
+            amb = scale(normalisation(amb), 1.5);
+            ta = add(amb, tb);
+            dontdraw = 0;
+        } else if (horschampb > 1.5) {
+            vector bma = sub(tb, ta);
+            bma = scale(normalisation(bma), 1.5);
+            tb = add(bma, ta);
+            dontdraw = 0;
+        } else if (horschampa <= 1.5, horschampb <= 1.5) {
+            dontdraw = 0;
+        }
+
+        if (dontdraw == 0) {
+            float scalaire = 1024*fov;
+            ta = scale(ta, scalaire);
+            tb = scale(tb, scalaire);
+
+
+            vector glider = sub(ta, tb);
+
+            vector translation = nvec(512.5, 512.5, 0);
+
+            ta = add(ta, translation);
+            tb = add(tb, translation);
+
+            float nrm = inorm(glider);
+            float ite = pent(1/nrm) + 1; if (ite > 10000) {printf("erreur\n");};
+            glider = normalisation(glider);
+            int X;
+            int Y;
         
-
-        ta = scale(ta, 96*(1/tan(fov)));
-        tb = scale(tb, 96*(1/tan(fov)));
-
-
-        vector glider = sub(ta, tb);
-        float nrm = inorm(glider);
-        float ite = pent(1/nrm) + 1;
-        glider = normalisation(glider);
-        ta = add(ta, nvec(96.5, 96.5, 0));
-        tb = add(tb, nvec(96.5, 96.5, 0));
-        int X;
-        int Y;
-        for (int i = 0; i < ite; i++) {
-            X = pent(tb.x);
-            Y = pent(tb.y);
-            if (X > 0 && X < 192 && Y > 0 && Y < 192) {
-                screen[X][Y] = '#';
+            for (int i = 0; i < ite; i++) {
+                X = pent(tb.x);
+                Y = pent(tb.y);
+                if (X > 0 && X < 1024 && Y > 0 && Y < 1024) {
+                    SDL_RenderDrawPoint(d, X, 1024 - Y);
+                }
+                tb = add(tb, glider);
             }
-            tb = add(tb, glider);
         }
     }
 }
-
-void fisheye(vector a, vector b, cam c) { // Prend deux vecteurs en entrée, dessine le vecteur en fonction d'une caméra
-
-    vector ta = getcoord(sub(a, c.pos), c);
-    vector tb = getcoord(sub(b, c.pos), c);
-
-
-    // On part du principe qu'il n'y a rien sur la caméra
-
-    vector ua = ta;
-    vector ub = tb;
-    float L;
-    if (ta.z < 0 && tb.z >= 0) {
-        L = tb.z / (tb.z - ta.z);
-        ta = add(scale(ta, L), scale(tb, 1 - L));
-    } else if (tb.z < 0 && ta.z >= 0) {
-        L = tb.z / (tb.z - ta.z);
-        ta = add(scale(ta, L), scale(tb, 1 - L));
-    }
-
-
-    if (tb.z >= 0 && ta.z >= 0) {
-        ua.z = 0;
-        ub.z = 0;
-
-        float nrm1 = 1/inorm(ua);
-        float nrm2 = 1/inorm(ub);
-        float nrm3 = 1/inorm(ta);
-        float nrm4 = 1/inorm(tb);
-
-        ua = normalisation(ua);
-        ub = normalisation(ub);
-        ua = scale(ua, (nrm1/nrm3)*136);
-        ub = scale(ub, (nrm2/nrm4)*136);
-        ua = add(ua, nvec(96.5, 96.5, 0));
-        ub = add(ub, nvec(96.5, 96.5, 0));
-        // Ici le FOV est fixe.
-        // Idée pour régler le problème sans arccos : on fait une rotation, on éloigne le vecteur de l'axe z.
-
-        vector final = sub(ua, ub);
-
-        float inversenorme = inorm(final);
-        final = scale(final, inversenorme);
-        int ite = pent(1/inversenorme) + 1;
-        int X;
-        int Y;
-        for (int i = 0; i < ite; i++) {
-            X = pent(ub.x);
-            Y = pent(ub.y);
-            if (X > 0 && X < 192 && Y > 0 && Y < 192) {
-                screen[X][Y] = '#';
-            }
-            ub = add(ub, final);
-        }
-    }
-}
-
 
 vector *sphere(float rayon, float x, float y, float z) {
     vector *result = malloc(288*sizeof(vector));
@@ -307,6 +269,7 @@ vector *sphere(float rayon, float x, float y, float z) {
     return result;
 }
 
+
 vector *cube(float cote, float x, float y, float z) {
     vector *result = malloc(8*sizeof(vector));
     float c = cote/2;
@@ -316,197 +279,122 @@ vector *cube(float cote, float x, float y, float z) {
     return result;
 }
 
-void approx(vector a, vector b, int precision, cam c) {
-    float precis = precision;
-    vector glider = scale(sub(a, b), 1/precis);
-    vector source = b;
-    vector goal = add(b, glider);
-    for (int i = 0; i < precision; i++) {
-        vd(goal, source, c);
-        source = add(source, glider);
-        goal = add(goal, glider);
-    }
-}
-
-void drawsphere(vector *todraw, cam camera) {
+void drawsphere(vector *todraw, cam camera, SDL_Renderer *d) {
     for (int i = 0; i < 6; i++) {
         for (int j = 0; j < 48; j++) {
-            vd(todraw[48*i + (j%48)], todraw[48*i + ( (j+1)%48 )], camera);
+            vd(todraw[48*i + (j%48)], todraw[48*i + ( (j+1)%48 )], camera, d);
         }
     }
 }
 
-void drawcube(vector *todraw, cam camera) {
-    vd(todraw[0], todraw[1], camera);
-    vd(todraw[0], todraw[2], camera);
-    vd(todraw[2], todraw[3], camera);
-    vd(todraw[1], todraw[3], camera);
-    vd(todraw[4], todraw[0], camera);
-    vd(todraw[5], todraw[1], camera);
-    vd(todraw[6], todraw[2], camera);
-    vd(todraw[7], todraw[3], camera);
-    vd(todraw[4], todraw[5], camera);
-    vd(todraw[4], todraw[6], camera);
-    vd(todraw[5], todraw[7], camera);
-    vd(todraw[6], todraw[7], camera);
-    // scd();
+/*
+void protoraster(triangle tri, cam camera, SDL_Renderer *d) {
+    vector a = sub(tri.a, tri.c); // Notre axe X
+    vector b = sub(tri.b, tri.c); // notre axe Y
+    vector c = tri.c; // Le vecteur Y -> X
+
+    vector ab = sub(a, b);
+    
+
+    float norme ab = inorm(sub(a, b));
+    ab = scale(ab, norme);
+    norme = pent(1/norme) + 1;
+
+    int ratio;
+
+    for (int i = 0; i < norme; i++) {
+        ratio = i / (norme - 1);
+        vd(add(a, c), )
+    }  
+}
+*/
+
+
+void drawcube(vector *todraw, cam camera, SDL_Renderer *d) {
+    vd(todraw[0], todraw[1], camera, d);
+    vd(todraw[0], todraw[2], camera, d);
+    vd(todraw[2], todraw[3], camera, d);
+    vd(todraw[1], todraw[3], camera, d);
+    vd(todraw[4], todraw[0], camera, d);
+    vd(todraw[5], todraw[1], camera, d);
+    vd(todraw[6], todraw[2], camera, d);
+    vd(todraw[7], todraw[3], camera, d);
+    vd(todraw[4], todraw[5], camera, d);
+    vd(todraw[4], todraw[6], camera, d);
+    vd(todraw[5], todraw[7], camera, d);
+    vd(todraw[6], todraw[7], camera, d);
 }
 
 int main(void) {
     cam camera;
-    camera.pos = nvec(30, 30, 60);
-    camera.direction = nvec(-1, -1, -2);
-    camera.angle = 0;
-    camera.fov = 90;
+    camera.pos = nvec(70, 10, 70);
+    setcamdirection(&camera, nvec(-7, -1, -7));
+    setcamangle(&camera, 0);
+    setcamfov(&camera, 90);
 
-    scr();
+    SDL_Window *window = NULL;
+    SDL_Renderer *renderer = NULL;
 
-    /*
-    vector *kube = cube(50, 0, 0, 0);
-    drawcube(kube, camera);
-    scd();
-    */
 
-    /*
-    vector *spheru = sphere(3, 0, 0, 0);
-    drawsphere(spheru, camera);
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_CreateWindowAndRenderer(1024, 1024, 0, &window, &renderer);
 
-    scd();
-    */
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);    
+    SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
 
-    
+
+    /* 
     for (int i = 0; i < 64; i++) {
         vector *kube = cube(10, 10*(i&3), 0, 10*((i&(0b1100))>>2));
-        drawcube(kube, camera);
+        drawcube(kube, camera, renderer);
         free(kube);
     }
-
+    */
+    
+    
     vector *kube = cube(10, 20, 10, 20);
-    drawcube(kube, camera);
-    
+    drawcube(kube, camera, renderer);
 
-    scd();
-    
+    SDL_RenderPresent(renderer);
+    SDL_Delay(5000);
 
-    printf("Fin de l'exécution.");
-    n();
-    return 0;
-}
-
-/*
-    vd(todraw[0], todraw[1], camera);
-    vd(todraw[0], todraw[2], camera);
-    vd(todraw[2], todraw[3], camera);
-    vd(todraw[1], todraw[3], camera);
-    vd(todraw[4], todraw[0], camera);
-    vd(todraw[5], todraw[1], camera);
-    vd(todraw[6], todraw[2], camera);
-    vd(todraw[7], todraw[3], camera);
-    vd(todraw[4], todraw[5], camera);
-    vd(todraw[4], todraw[6], camera);
-    vd(todraw[5], todraw[7], camera);
-    vd(todraw[6], todraw[7], camera);
-    */
-
-
-/*
-float cs(float x) {
-    int mode = ((pent(x*10000)) / 31415)&1;
-    float modulo = ((pent(x * 10000)) % 31415);
-    modulo = modulo/10000;
-    float result = 1;
-    int rhesus = 1;
-    float pow = 1;
-    int facto = 1;
-    for (int i = 2; i < 10; i+=2) {
-        pow = pow*modulo*modulo;
-        facto = facto*i*(i-1);
-        rhesus = rhesus*(-1);
-        result = result + rhesus*(pow/facto);
-    }
-    result = (1 - 2*mode)*result;
-    return result;
-}
-
-float sn(float x) {
-    int mode = ((pent(x*10000)) / 31415)&1;
-    float modulo = ((pent(x * 10000)) % 31415);
-    modulo = modulo/10000;
-    float result = modulo;
-    int rhesus = 1;
-    float pow = modulo;
-    int facto = 1;
-    for (int i = 3; i < 11; i+=2) {
-        pow = pow*modulo*modulo;
-        facto = facto*i*(i-1);
-        rhesus = rhesus*(-1);
-        result = result + rhesus*(pow/facto);
-    }
-    result = (1 - 2*mode)*result;
-    return result;
-}
-
-
-void sv(vector a, cam c) {
-    vector ta = getcoord(sub(a, c.pos), c);
-
-    // On part du principe qu'il n'y a rien sur la caméra
-
-    vector ua = ta;
-    printf("%f, %f, %f\n", ua.x, ua.y, ua.z);
-    ua.z = 0;
-    ua = normalisation(ua);
-    printf("%f, %f, %f\n", ua.x, ua.y, ua.z);
-
-    float nrm1 = 1/inorm(ua);
-    float nrm3 = 1/inorm(ta);
-    // nrm1/nrm3
-    ua = scale(ua, (nrm1/nrm3)*136);
-    printf("%f, %f, %f\n", ua.x, ua.y, ua.z);
-    ua = add(ua, nvec(96.5, 96.5, 0));
-    // Ici le FOV est fixe.
-    // Idée pour régler le problème sans arccos : on fait une rotation, on éloigne le vecteur de l'axe z.
-    int X = pent(ua.x);
-    int Y = pent(ua.y);
-    screen[X][Y] = '#';
-}
-    */
-
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);    
+    SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
 
     /*
-        na.z = 0;
-        nb.z = 0;
-        nb = normalisation(nb);
-        float cosinus1 = nb.x;
-        float sinus1 = nb.y;
-        na = normalisation(nvec(na.x * cosinus1 + sinus1 * na.y, na.y * cosinus1 - (na.x * sinus1), 0));
-        printf("Rotation 1 na = (%f, %f, %f)", na.x, na.y, na.z); n();
-        float cosinus2 = na.x;
-        float sinus2 = na.y;
-        na = nvec(ta.x * cosinus2 + ta.y * sinus2, ta.y * cosinus2 - (ta.x * sinus2), 0);
-        printf("Rotation 2 na = (%f, %f, %f)", na.x, na.y, na.z); n();
-        // On fait une rotation sur ta ici pour qu'il soit aligné à tb, quand on observe la scène depuis derrière la caméra
+    vector *spheru = sphere(20, 0, 0, 0);
+    drawsphere(spheru, camera, renderer);
+    SDL_RenderPresent(renderer);
+    SDL_Delay(5000);
+    */
 
-        // Maintenant, on fait avancer na jusqu'à ce qu'il soit pile sur le cône du champ de vision. Comme on se limite à 180°, on
-        // a déjà évité les problèmes de devoir ramener un point infiniment loin sur un écran.
 
-        float norme = 1/(inorm(na));
-        float normenb = 1/(inorm(nb));
-        float targetz = (tb.z / normenb) * norme;
-        na.z = targetz; // Maintenant, na.z est colinéaire à tb.z.
+    vector travelling;
 
-        norme = 1/(inorm(na));
-        norme = norme*norme;
+    for (int i = 0; i < 1500; i++) {
+        travelling = nvec(2*cos((i*3.141592)/120), 1, 2*sin((i*3.141592)/120));
+        setcamdirection(&camera, scale(travelling, -1));
+        travelling = scale(travelling, 7);
+        travelling = add(travelling, nvec(15, 0, 15));
+        camera.pos = travelling;
+        for (int j = 0; j < 64; j++) {
+            vector *kube = cube(10, 10*(j&3), 0, 10*((j&(0b1100))>>2));
+            drawcube(kube, camera, renderer);
+            free(kube);
+        }
+        SDL_RenderPresent(renderer);
+        SDL_Delay(17);
+
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);    
+        SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
+
+
+    }
+
     
-
-        
-        // On cherche le projeté orthogonal à notre nouveau vecteur.
-        float lambda = (na.x * ta.x + na.y * ta.y + na.z * ta.z)/norme;
-        vector movea = normalisation(add(ta, -scale(na, lambda))); // Ce vecteur est orthogonal au cône de vision.
-        norme = 1/(inorm(na));
-        vector final = scale(normalisation(sub(b, a)), norme); // Changer le nom, mais en gros ce vecteur devrait être au bon endroit
-
-        ta = final;
-        printf("ta = (%f, %f, %f)", ta.x, ta.y, ta.z);
-        n();
-        */
+    SDL_Quit();
+    return 0;
+}
